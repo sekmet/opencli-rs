@@ -89,13 +89,40 @@ impl DaemonClient {
         )))
     }
 
-    /// Check if the daemon is running by hitting the health endpoint.
+    /// Check if something is listening on the daemon port.
+    /// Tries our health endpoint first, then falls back to checking with X-OpenCLI header
+    /// (needed for the original opencli daemon which requires it on all requests).
     pub async fn is_running(&self) -> bool {
         let url = format!("{}/health", self.base_url);
-        matches!(
-            self.client.get(&url).send().await,
-            Ok(resp) if resp.status().is_success()
-        )
+        // Try without header first (our daemon doesn't require it)
+        if let Ok(resp) = self.client.get(&url).send().await {
+            if resp.status().is_success() {
+                return true;
+            }
+            // Got a response (even 403) means something is listening
+            if resp.status().as_u16() == 403 {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Check if the running daemon is ours (opencli-rs) vs a foreign one (e.g. original opencli).
+    /// Our daemon returns `{"daemon": true, ...}` on /status.
+    /// The original opencli daemon returns `{"ok": true, "extensionConnected": ...}`.
+    pub async fn is_ours(&self) -> bool {
+        let url = format!("{}/status", self.base_url);
+        match self.client.get(&url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                if let Ok(json) = resp.json::<Value>().await {
+                    // Our daemon has "daemon" field; original has "extensionConnected"
+                    json.get("daemon").is_some()
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
     }
 
     /// Check if the Chrome extension is connected to the daemon.

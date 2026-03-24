@@ -35,13 +35,21 @@ impl BrowserBridge {
     pub async fn connect(&mut self) -> Result<Arc<dyn IPage>, CliError> {
         let client = Arc::new(DaemonClient::new(self.port));
 
-        // Check if daemon is already running
-        if !client.is_running().await {
+        if client.is_running().await {
+            // Port is occupied — check if it's our daemon or a foreign one
+            if client.is_ours().await {
+                debug!(port = self.port, "our daemon already running");
+            } else {
+                info!(port = self.port, "foreign daemon detected on port, killing it");
+                self.kill_port_occupant().await;
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                self.spawn_daemon().await?;
+                self.wait_for_ready(&client).await?;
+            }
+        } else {
             info!(port = self.port, "daemon not running, spawning");
             self.spawn_daemon().await?;
             self.wait_for_ready(&client).await?;
-        } else {
-            debug!(port = self.port, "daemon already running");
         }
 
         // Wait for extension to connect (it may need time to reconnect after daemon restart)
@@ -81,6 +89,28 @@ impl BrowserBridge {
         info!(port = self.port, pid = ?child.id(), "daemon process spawned");
         self.daemon_process = Some(child);
         Ok(())
+    }
+
+    /// Kill whatever process is listening on our port.
+    async fn kill_port_occupant(&self) {
+        // Use lsof to find the PID occupying the port, then kill it
+        let output = tokio::process::Command::new("lsof")
+            .args(["-ti", &format!("tcp:{}", self.port)])
+            .output()
+            .await;
+
+        if let Ok(output) = output {
+            let pids = String::from_utf8_lossy(&output.stdout);
+            for pid_str in pids.trim().lines() {
+                if let Ok(pid) = pid_str.trim().parse::<u32>() {
+                    info!(pid = pid, port = self.port, "killing foreign daemon process");
+                    let _ = tokio::process::Command::new("kill")
+                        .arg(pid.to_string())
+                        .output()
+                        .await;
+                }
+            }
+        }
     }
 
     /// Wait for the Chrome extension to connect to the daemon.
