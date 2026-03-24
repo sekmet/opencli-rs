@@ -487,6 +487,52 @@ impl StepHandler for ScrollStep {
 }
 
 // ---------------------------------------------------------------------------
+// CollectStep — collect intercepted requests and parse with JS function
+// ---------------------------------------------------------------------------
+
+pub struct CollectStep;
+
+#[async_trait]
+impl StepHandler for CollectStep {
+    fn name(&self) -> &'static str {
+        "collect"
+    }
+
+    fn is_browser_step(&self) -> bool {
+        true
+    }
+
+    async fn execute(
+        &self,
+        page: Option<Arc<dyn IPage>>,
+        params: &Value,
+        _data: &Value,
+        _args: &HashMap<String, Value>,
+    ) -> Result<Value, CliError> {
+        let pg = require_page(&page)?;
+
+        // Get the parse function from params
+        let parse_fn = params
+            .get("parse")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| CliError::pipeline("collect step requires a 'parse' field with a JS function"))?;
+
+        // Get intercepted requests
+        let requests = pg.get_intercepted_requests().await?;
+        let requests_json = serde_json::to_string(&requests)
+            .map_err(|e| CliError::pipeline(format!("Failed to serialize intercepted requests: {e}")))?;
+
+        // Execute the parse function in browser with the intercepted requests
+        let js = format!(
+            "(() => {{ const parseFn = {}; const requests = {}; return parseFn(requests); }})()",
+            parse_fn, requests_json
+        );
+
+        pg.evaluate(&js).await
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
@@ -500,6 +546,7 @@ pub fn register_browser_steps(registry: &mut StepRegistry) {
     registry.register(Arc::new(SnapshotStep));
     registry.register(Arc::new(ScreenshotStep));
     registry.register(Arc::new(ScrollStep));
+    registry.register(Arc::new(CollectStep));
 }
 
 // ---------------------------------------------------------------------------
