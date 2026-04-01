@@ -62,6 +62,16 @@ pub async fn generate_with_llm(
         .await
         .map_err(|e| CliError::Http { message: format!("LLM request failed: {}", e), suggestions: vec![], source: None })?;
 
+    if resp.status().as_u16() == 403 {
+        return Err(CliError::Http {
+            message: "Token invalid or expired".into(),
+            suggestions: vec![
+                "Get a new token: https://autocli.ai/get-token".into(),
+                "Then run: opencli-rs auth".into(),
+            ],
+            source: None,
+        });
+    }
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();

@@ -161,6 +161,44 @@ fn save_adapter(site: &str, name: &str, yaml: &str) {
     }
 }
 
+const TOKEN_URL: &str = "https://autocli.ai/get-token";
+
+/// Print token missing message and exit.
+fn require_token() -> String {
+    let config = opencli_rs_ai::load_config();
+    match config.autocli_token {
+        Some(t) if !t.is_empty() => t,
+        _ => {
+            eprintln!("{}", t(
+                "❌ 未认证，请先登录获取 Token",
+                "❌ Not authenticated. Please login to get your token"
+            ));
+            eprintln!("   {}", TOKEN_URL);
+            eprintln!();
+            eprintln!("   {}", t(
+                "获取 Token 后运行: opencli-rs auth",
+                "After getting your token, run: opencli-rs auth"
+            ));
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Print token invalid/expired message and exit.
+fn token_expired_exit() -> ! {
+    eprintln!("{}", t(
+        "❌ Token 无效或已过期，请重新获取",
+        "❌ Token is invalid or expired. Please get a new one"
+    ));
+    eprintln!("   {}", TOKEN_URL);
+    eprintln!();
+    eprintln!("   {}", t(
+        "获取新 Token 后运行: opencli-rs auth",
+        "After getting a new token, run: opencli-rs auth"
+    ));
+    std::process::exit(1);
+}
+
 /// Adapter match from server search
 struct AdapterMatch {
     match_type: String,
@@ -192,6 +230,9 @@ async fn search_existing_adapters(url: &str, token: &str) -> Result<Vec<AdapterM
         .await
         .map_err(|_| t("❌ 服务器连接失败，请稍后再试", "❌ Server connection failed, please try again later").to_string())?;
 
+    if resp.status().as_u16() == 403 {
+        token_expired_exit();
+    }
     if !resp.status().is_success() {
         return Err(format!("{}{}", t("❌ 服务器返回错误: ", "❌ Server error: "), resp.status()));
     }
@@ -240,6 +281,9 @@ async fn fetch_adapter_config(command_uuid: &str, token: &str) -> Result<String,
         .await
         .map_err(|_| t("❌ 服务器连接失败，请稍后再试", "❌ Server connection failed, please try again later").to_string())?;
 
+    if resp.status().as_u16() == 403 {
+        token_expired_exit();
+    }
     if !resp.status().is_success() {
         return Err(format!("{}{}", t("❌ 获取配置失败: ", "❌ Failed to fetch config: "), resp.status()));
     }
@@ -255,14 +299,7 @@ async fn fetch_adapter_config(command_uuid: &str, token: &str) -> Result<String,
 }
 
 async fn upload_adapter(yaml: &str) {
-    let config = opencli_rs_ai::load_config();
-    let token = match config.autocli_token {
-        Some(t) => t,
-        None => {
-            eprintln!("{}", t("⏭️  未配置 Token，跳过上传。运行: opencli-rs auth", "⏭️  No autocli-token configured, skipping upload. Run: opencli-rs auth"));
-            return;
-        }
-    };
+    let token = require_token();
 
     let api_url = opencli_rs_ai::upload_url();
 
@@ -288,6 +325,8 @@ async fn upload_adapter(yaml: &str) {
         Ok(resp) => {
             if resp.status().is_success() {
                 eprintln!("{}", t("✅ 配置上传成功", "✅ Adapter uploaded successfully"));
+            } else if resp.status().as_u16() == 403 {
+                token_expired_exit();
             } else {
                 let status = resp.status();
                 let body = resp.text().await.unwrap_or_default();
@@ -409,14 +448,7 @@ async fn main() {
                 } else {
                     format!("https://{}", raw_url)
                 };
-                let config = opencli_rs_ai::load_config();
-                let token = match &config.autocli_token {
-                    Some(t) => t.clone(),
-                    None => {
-                        eprintln!("{}", t("❌ 未认证，请先运行: opencli-rs auth", "❌ Not authenticated. Run first: opencli-rs auth"));
-                        std::process::exit(1);
-                    }
-                };
+                let token = require_token();
 
                 match search_existing_adapters(&url, &token).await {
                     Ok(matches) if !matches.is_empty() => {
@@ -647,15 +679,7 @@ async fn main() {
                     Ok(page) => {
                         if use_ai {
                             // Require token for --ai
-                            let config = opencli_rs_ai::load_config();
-                            let token = match &config.autocli_token {
-                                Some(t) => t.clone(),
-                                None => {
-                                    eprintln!("{}", t("❌ 未认证，请先运行: opencli-rs auth", "❌ Not authenticated. Run first: opencli-rs auth"));
-                                    let _ = page.close().await;
-                                    std::process::exit(1);
-                                }
-                            };
+                            let token = require_token();
 
                             // Step 1: Search server for existing adapters
                             let mut need_ai_generate = false;
